@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Find files with identical contents."""
 
+import argparse
 import hashlib
+import json
 import os
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -90,3 +93,52 @@ def format_size(size):
         if size < 1024 or unit == "GiB":
             return f"{size} {unit}" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="Find files with identical contents.")
+    parser.add_argument("paths", nargs="*", default=["."], help="directories or files to scan (default: .)")
+    parser.add_argument("--min-size", type=int, default=1, metavar="BYTES",
+                        help="ignore files smaller than this (default: 1)")
+    parser.add_argument("--include-empty", action="store_true", help="also report empty files")
+    parser.add_argument("--hidden", action="store_true", help="include hidden files and directories")
+    parser.add_argument("--json", action="store_true", help="print groups as JSON")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if args.min_size < 0:
+        print("error: --min-size must not be negative", file=sys.stderr)
+        return 2
+    missing = [p for p in args.paths if not Path(p).exists()]
+    if missing:
+        print(f"error: no such file or directory: {missing[0]}", file=sys.stderr)
+        return 2
+
+    min_size = 0 if args.include_empty else max(args.min_size, 1)
+
+    def report(path, error):
+        print(f"warning: skipping {path}: {error.strerror or error}", file=sys.stderr)
+
+    groups = find_duplicates(args.paths, min_size=min_size, include_hidden=args.hidden, on_error=report)
+
+    if args.json:
+        print(json.dumps([[str(p) for p in group] for group in groups], indent=2))
+        return 0
+
+    if not groups:
+        print("No duplicates found.")
+        return 0
+    for group in groups:
+        print(f"{format_size(group[0].stat().st_size)} x {len(group)}")
+        for path in group:
+            print(f"  {path}")
+        print()
+    extra = sum(len(group) - 1 for group in groups)
+    print(f"{len(groups)} group(s), {extra} redundant file(s), {format_size(wasted_bytes(groups))} wasted")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
