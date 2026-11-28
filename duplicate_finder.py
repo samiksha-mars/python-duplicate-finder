@@ -10,6 +10,9 @@ from collections import defaultdict
 from pathlib import Path
 
 CHUNK_SIZE = 1024 * 1024
+# Same-size files larger than this are first compared by a hash of their first
+# HEAD_SIZE bytes, so files that differ early are never read in full.
+HEAD_SIZE = 64 * 1024
 
 
 def iter_files(roots, include_hidden=False):
@@ -31,13 +34,34 @@ def iter_files(roots, include_hidden=False):
                     yield path
 
 
-def file_hash(path, chunk_size=CHUNK_SIZE):
-    """Return the SHA-256 hex digest of a file, read in chunks."""
+def file_hash(path, chunk_size=CHUNK_SIZE, limit=None):
+    """Return the SHA-256 hex digest of a file, read in chunks.
+
+    With ``limit``, only the first ``limit`` bytes are hashed.
+    """
     digest = hashlib.sha256()
+    remaining = limit
     with open(path, "rb") as handle:
-        while chunk := handle.read(chunk_size):
+        while remaining is None or remaining > 0:
+            chunk = handle.read(chunk_size if remaining is None else min(chunk_size, remaining))
+            if not chunk:
+                break
             digest.update(chunk)
+            if remaining is not None:
+                remaining -= len(chunk)
     return digest.hexdigest()
+
+
+def _group_by_hash(paths, on_error, limit=None):
+    """Split paths into lists with equal hashes, keeping only lists of two or more."""
+    by_hash = defaultdict(list)
+    for path in paths:
+        try:
+            by_hash[file_hash(path, limit=limit)].append(path)
+        except OSError as error:
+            if on_error:
+                on_error(path, error)
+    return [same for same in by_hash.values() if len(same) > 1]
 
 
 def find_duplicates(roots, min_size=1, include_hidden=False, on_error=None):
@@ -67,15 +91,10 @@ def find_duplicates(roots, min_size=1, include_hidden=False, on_error=None):
     for size, paths in by_size.items():
         if len(paths) < 2:
             continue
-        by_hash = defaultdict(list)
-        for path in paths:
-            try:
-                by_hash[file_hash(path)].append(path)
-            except OSError as error:
-                if on_error:
-                    on_error(path, error)
-        for same in by_hash.values():
-            if len(same) > 1:
+        # For small files the head hash would cover the whole file, so skip it.
+        candidates = _group_by_hash(paths, on_error, limit=HEAD_SIZE) if size > HEAD_SIZE else [paths]
+        for candidate in candidates:
+            for same in _group_by_hash(candidate, on_error):
                 groups.append((size, sorted(same)))
 
     groups.sort(key=lambda group: (-group[0] * (len(group[1]) - 1), str(group[1][0])))

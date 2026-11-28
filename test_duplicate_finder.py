@@ -4,9 +4,16 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from hashlib import sha256
 from pathlib import Path
+from unittest import mock
 
-from duplicate_finder import file_hash, find_duplicates, format_size, iter_files, main, wasted_bytes
+import duplicate_finder
+from duplicate_finder import HEAD_SIZE, file_hash, find_duplicates, format_size, iter_files, main, wasted_bytes
+
+
+def file_hash_of(data):
+    return sha256(data).hexdigest()
 
 
 class TempDirTestCase(unittest.TestCase):
@@ -79,6 +86,27 @@ class FindDuplicatesTest(TempDirTestCase):
 
 
 class HelpersTest(TempDirTestCase):
+
+    def test_file_hash_limit(self):
+        path = self.root / "f"
+        path.write_bytes(b"abcdef")
+        self.assertEqual(file_hash(path, chunk_size=4, limit=5), file_hash_of(b"abcde"))
+        self.assertEqual(file_hash(path, limit=100), file_hash(path))
+
+    def test_large_files_differing_only_at_end(self):
+        head = b"x" * (HEAD_SIZE + 10)
+        (self.root / "a").write_bytes(head + b"1")
+        (self.root / "b").write_bytes(head + b"2")
+        (self.root / "c").write_bytes(head + b"1")
+        self.assertEqual(find_duplicates([self.root]), [[self.root / "a", self.root / "c"]])
+
+    def test_large_files_differing_early_are_not_read_in_full(self):
+        size = HEAD_SIZE * 3
+        (self.root / "a").write_bytes(b"a" * size)
+        (self.root / "b").write_bytes(b"b" * size)
+        with mock.patch.object(duplicate_finder, "file_hash", wraps=file_hash) as spy:
+            self.assertEqual(find_duplicates([self.root]), [])
+        self.assertEqual({call.kwargs.get("limit") for call in spy.call_args_list}, {HEAD_SIZE})
 
     def test_file_hash_small_chunks(self):
         path = self.write("f", "abcdef" * 1000)

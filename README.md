@@ -50,7 +50,8 @@ The tool only reports duplicates; it never deletes or modifies files.
 
 1. Walk the given paths and group regular files by size (symlinks are skipped, and a file reached through overlapping paths is counted once).
 2. Files with a unique size cannot have a duplicate, so they are dropped without being read.
-3. The remaining files are hashed with SHA-256 in 1 MiB chunks, and files with equal hashes are reported together.
+3. Files larger than 64 KiB are first compared by a SHA-256 hash of their first 64 KiB. Most files that merely share a size differ early, so they are dropped after a small read.
+4. The remaining files are hashed in full with SHA-256 in 1 MiB chunks, and files with equal hashes are reported together.
 
 ## Tests
 
